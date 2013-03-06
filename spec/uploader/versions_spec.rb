@@ -113,7 +113,29 @@ describe CarrierWave::Uploader do
 
     it "should accept option :from_version" do
       @uploader_class.version :small_thumb, :from_version => :thumb
-      @uploader_class.version(:small_thumb)[:options][:from_version].should == :thumb
+      @uploader_class.version(:small_thumb)[:uploader].version_options[:from_version].should == :thumb
+    end
+
+    describe 'dynamic versions' do
+      before do
+        @uploader_class.class_eval do
+          def add_dynamic_versions(versions)
+            if self.class.version_names.length == 0
+              versions[:thumb] = version(:thumb) {
+                def monkey
+                  "monkey"
+                end
+              }
+            end
+          end
+        end
+      end
+
+      it 'should add the versions to the instantiated class only' do
+        expect { @uploader_class.version(:thumb)[:uploader].monkey }.to raise_error(NoMethodError)
+        @uploader.versions[:thumb].monkey.should == 'monkey'
+        @uploader.thumb.monkey.should == 'monkey'
+      end
     end
 
     describe 'with nested versions' do
@@ -279,7 +301,7 @@ describe CarrierWave::Uploader do
       end
 
       it "should process conditional versions if the condition method returns true" do
-        @uploader_class.version(:preview)[:options][:if] = :true?
+        @uploader_class.version(:preview)[:uploader].version_options[:if] = :true?
         @uploader.should_receive(:true?).at_least(:once).and_return(true)
         @uploader.store!(@file)
         @uploader.thumb.should be_present
@@ -287,7 +309,7 @@ describe CarrierWave::Uploader do
       end
 
       it "should not process conditional versions if the condition method returns false" do
-        @uploader_class.version(:preview)[:options][:if] = :false?
+        @uploader_class.version(:preview)[:uploader].version_options[:if] = :false?
         @uploader.should_receive(:false?).at_least(:once).and_return(false)
         @uploader.store!(@file)
         @uploader.thumb.should be_present
@@ -295,7 +317,7 @@ describe CarrierWave::Uploader do
       end
 
       it "should process conditional version if the condition block returns true" do
-        @uploader_class.version(:preview)[:options][:if] = lambda{|record, args| record.true?(args[:file])}
+        @uploader_class.version(:preview)[:uploader].version_options[:if] = lambda{|record, args| record.true?(args[:file])}
         @uploader.should_receive(:true?).at_least(:once).and_return(true)
         @uploader.store!(@file)
         @uploader.thumb.should be_present
@@ -303,7 +325,7 @@ describe CarrierWave::Uploader do
       end
 
       it "should not process conditional versions if the condition block returns false" do
-        @uploader_class.version(:preview)[:options][:if] = lambda{|record, args| record.false?(args[:file])}
+        @uploader_class.version(:preview)[:uploader].version_options[:if] = lambda{|record, args| record.false?(args[:file])}
         @uploader.should_receive(:false?).at_least(:once).and_return(false)
         @uploader.store!(@file)
         @uploader.thumb.should be_present

@@ -8,10 +8,11 @@ module CarrierWave
       include CarrierWave::Uploader::Callbacks
 
       included do
-        class_attribute :versions, :version_names, :instance_reader => false, :instance_writer => false
+        class_attribute :version_options, :versions, :version_names, :instance_reader => false, :instance_writer => false
 
         self.versions = {}
         self.version_names = []
+        self.version_options = {}
 
         attr_accessor :parent_cache_id
 
@@ -24,6 +25,37 @@ module CarrierWave
       end
 
       module ClassMethods
+        def generate_version(name, options = {})
+          uploader = Class.new(self)
+          const_set("Uploader#{uploader.object_id}".gsub('-', '_'), uploader)
+          uploader.versions = {}
+
+          # Version options live on the uploader itself to simplify option access
+          uploader.version_options = options
+
+          # Define the enable_processing method for versions so they get the
+          # value from the parent class unless explicitly overwritten
+          uploader.class_eval <<-RUBY, __FILE__, __LINE__ + 1
+            def self.enable_processing(value=nil)
+              self.enable_processing = value if value
+              if !@enable_processing.nil?
+                @enable_processing
+              else
+                superclass.enable_processing
+              end
+            end
+          RUBY
+
+          # Add the current version hash to class attribute :versions
+          uploader.version_names += [name]
+
+          # as the processors get the output from the previous processors as their
+          # input we must not stack the processors here
+          uploader.processors = uploader.processors.dup
+          uploader.processors.clear
+
+          uploader
+        end
 
         ##
         # Adds a new version to this uploader
@@ -51,42 +83,13 @@ module CarrierWave
         def version(name, options = {}, &block)
           name = name.to_sym
           unless versions[name]
-            uploader = Class.new(self)
-            const_set("Uploader#{uploader.object_id}".gsub('-', '_'), uploader)
-            uploader.versions = {}
-
-            # Define the enable_processing method for versions so they get the
-            # value from the parent class unless explicitly overwritten
-            uploader.class_eval <<-RUBY, __FILE__, __LINE__ + 1
-              def self.enable_processing(value=nil)
-                self.enable_processing = value if value
-                if !@enable_processing.nil?
-                  @enable_processing
-                else
-                  superclass.enable_processing
-                end
-              end
-            RUBY
-
-            # Add the current version hash to class attribute :versions
-            current_version = {}
-            current_version[name] = {
-              :uploader => uploader,
-              :options  => options
-            }
-            self.versions = versions.merge(current_version)
-
-            versions[name][:uploader].version_names += [name]
+            self.versions = versions.merge(name => { :uploader => generate_version(name, options) })
 
             class_eval <<-RUBY
               def #{name}
                 versions[:#{name}]
               end
             RUBY
-            # as the processors get the output from the previous processors as their
-            # input we must not stack the processors here
-            versions[name][:uploader].processors = versions[name][:uploader].processors.dup
-            versions[name][:uploader].processors.clear
           end
           versions[name][:uploader].class_eval(&block) if block
           versions[name]
@@ -113,7 +116,73 @@ module CarrierWave
         self.class.versions.each do |name, version|
           @versions[name] = version[:uploader].new(model, mounted_as)
         end
+        add_dynamic_versions(@versions)
         @versions
+      end
+
+      ##
+      # Access this uploader's version options
+      ##
+      def version_options
+        self.class.version_options
+      end
+
+      ##
+      # Cache instantiated dynamic uploader classes
+      ##
+      def dynamic_version_classes
+        @dynamic_version_classes ||= {}
+      end
+
+      ##
+      # Cache instantiated dynamic uploaders
+      ##
+      def dynamic_versions
+        @dynamic_versions ||= {}
+      end
+
+      ##
+      # Override this to add your own dynamic versions to the uploader, probably
+      # based on the model it holds.
+      #
+      # === Example
+      #
+      # def add_dynamic_versions(versions)
+      #   if self.class.version_names.blank?
+      #     model.scaled_version_definitions.each do |definition|
+      #       versions[definition.name.to_sym] = add_dynamic_version(definition.name, :if => proc { some_condition }) { process :resize_to_fit => definition.resize_to_fit }
+      #     end
+      #   end
+      # end
+      ##
+      def add_dynamic_versions(versions)
+      end
+
+      ##
+      # Add a dynamic version. Works identically to the class method of creating versions.
+      # Use within add_dynamic_versions.
+      #
+      # === Returns
+      #
+      # An instance of a CarrierWave::Uploader built for the dynamic version
+      ##
+      def version(name, options = {}, &block)
+        name = name.to_sym
+        dynamic_version_classes[name] ||= self.class.generate_version(name, options, &block)
+
+        # Create the instance of the version class and the accessor method for that version
+        if !dynamic_versions[name]
+          dynamic_versions[name] = dynamic_version_classes[name].new(model, mounted_as)
+          dynamic_versions[name].class_eval(&block) if block
+
+          instance_eval <<-RB
+            def #{name}
+              versions[:#{name}]
+            end
+          RB
+        end
+
+        dynamic_versions[name]
       end
 
       ##
@@ -190,7 +259,7 @@ module CarrierWave
 
       def active_versions
         versions.select do |name, uploader|
-          condition = self.class.versions[name][:options][:if]
+          condition = uploader.version_options[:if]
           if(condition)
             if(condition.respond_to?(:call))
               condition.call(self, :version => name, :file => file)
@@ -224,12 +293,12 @@ module CarrierWave
           v.send(:cache_id=, cache_id)
           # If option :from_version is present, create cache using cached file from
           # version indicated
-          if self.class.versions[name][:options] && self.class.versions[name][:options][:from_version]
+          if v.version_options && v.version_options[:from_version]
             # Maybe the reference version has not been cached yet
-            unless versions[self.class.versions[name][:options][:from_version]].cached?
-              versions[self.class.versions[name][:options][:from_version]].cache!(processed_parent)
+            unless versions[v.version_options[:from_version]].cached?
+              versions[v.version_options[:from_version]].cache!(processed_parent)
             end
-            processed_version = SanitizedFile.new :tempfile => versions[self.class.versions[name][:options][:from_version]],
+            processed_version = SanitizedFile.new :tempfile => versions[v.version_options[:from_version]],
               :filename => new_file.original_filename
             v.cache!(processed_version)
           else
