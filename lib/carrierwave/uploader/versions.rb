@@ -168,12 +168,15 @@ module CarrierWave
       ##
       def version(name, options = {}, &block)
         name = name.to_sym
-        dynamic_version_classes[name] ||= self.class.generate_version(name, options, &block)
+
+        if !dynamic_version_classes[name]
+          dynamic_version_classes[name] = self.class.generate_version(name, options, &block)
+          dynamic_version_classes[name].class_eval(&block) if block
+        end
 
         # Create the instance of the version class and the accessor method for that version
         if !dynamic_versions[name]
           dynamic_versions[name] = dynamic_version_classes[name].new(model, mounted_as)
-          dynamic_versions[name].class_eval(&block) if block
 
           instance_eval <<-RB
             def #{name}
