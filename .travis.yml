@@ -9,15 +9,17 @@ rvm:
  - 1.9.2
  - 1.9.3
  - 2.0.0
+ - ruby-head
  - ree
 
 gemfile:
+  - Gemfile
   - gemfiles/rails3_2.gemfile
   - gemfiles/rails_master.gemfile
 
 matrix:
   allow_failures:
-    - rvm: 2.0.0
+    - rvm: ruby-head
   exclude:
     - rvm: 1.8.7
       gemfile: gemfiles/rails_master.gemfile
